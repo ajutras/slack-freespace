@@ -75,9 +75,7 @@ def start():
     #print(slacker.get_user(config.BOT.USER_ID))
     #print(slacker.get_channels())
     #print(slacker.get_channel('C4104TVR8'))
-    slacker.send_message('hello world?', as_user=False,
-                         username=,
-                         icon_url=)
+    slacker.send_message('hello world?', as_user=False)
     #  print(slacker.get_user_id('arbiter'))
     # print("connecting to slack")
     # if slack_client.rtm_connect():
