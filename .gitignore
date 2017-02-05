@@ -63,3 +63,4 @@ target/
 
 # Freespace
 test.py
+config/freespace.cfg
