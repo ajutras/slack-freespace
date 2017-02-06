@@ -1,37 +1,47 @@
+"""
+List of interesting events type:
 
 
+"""
 
 
+import logging
 
 
-def handle_unknown_rtm_type(rtm_output):
-    for output_key, output_value in rtm_output.items():
-        for output_key, output_value in output.items():
-            logging.debug("{}: {}".format(output_key, output_value))
+def handle_unknown(event):
+    logging.warning("RTM event of type {} received, this event type is not "
+                    "part of the list of known events".format(event['type']))
+    logging.debug("event received:")
+    for event_key, event_value in event.items():
+        logging.debug("{}: {}".format(event_key, event_value))
 
 
-types_rtm_output = {
-    # 'hello': None,
-    'message': handle_message,
+def handle_not_implemented(event):
+    logging.debug("RTM output of type {} received, no function implemented to "
+                  "handle this type of event.".format(event['type']))
+
+def handle_message(event):
+    logging.info("received message event")
+    logging.debug(event)
+
+
+type_events = {
+    'message': handle_message
 }
 
 
-def handler(rtm_output):
+def handle(events):
     """
     Depending on the type of the rtm output coming from the Slack firehose,
     redirect the rtm output to the correct handler.
 
-    :param rtm_output: A Slack RTM output from the firehose
-        (behave like a dict)
-
-    :return:
+    :param events: A list of Slack RTM event from the firehose,
+    :rtype events: list<dict>
     """
-    try:
-        types_rtm_output[rtm_output['type']](rtm_output)
-    except KeyError:
-        handle_unknown_rtm_type(rtm_output)
-
-
-
-
-
+    for event in events:
+        try:
+            # Launch handler function associated with the event
+            type_events[event['type']](event)
+        except KeyError:
+            # No handler function for this event type
+            handle_unknown(event)

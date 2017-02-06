@@ -3,11 +3,17 @@ import logging
 from slackclient import SlackClient
 
 from freespace.config import config
+from freespace.errors import SlackClientFailedInit
+
+
+slack = None
 
 
 class Slack:
     def __init__(self):
         self._client = None
+        self.channels = {}
+        self.user_id = ""
 
     def get_client(self):
         """
@@ -17,18 +23,59 @@ class Slack:
         """
         # Initialize Slack client if it's the first time calling it
         if not self._client:
-            logging.info("initializing Slack client")
+            logging.info("connecting Slack client")
 
             try:
                 self._client = SlackClient(config.SLACK.TOKEN)
                 if self.is_api_working():
-                    logging.debug("initialized Slack client")
+                    logging.debug("connected Slack client")
+                    logging.info("initializing client")
+                    if self._init_client():
+                        logging.debug("Slack client was initialized with all "
+                                      "ids ")
                 else:
-                    raise Exception("api.test did not return OK")
-            except:
-                logging.exception('failed to initialize Slack client')
-
+                    raise Exception("error while testing the connection: "
+                                    "api.test did not return OK")
+            except SlackClientFailedInit:
+                self._client = None
+                logging.exception("failed to initialize Slack client with the "
+                                  "resources listed in the config")
+            except Exception:
+                self._client = None
+                logging.exception("failure during the connection of the Slack "
+                                  "client to the Slack API")
         return self._client
+
+    def _init_client(self):
+        """
+        Attempt to fetch ID for the following resource named in config:
+
+            - Bot Slack user ID
+            - Channel ID for the default channel
+
+        :return: True if both a user id and channel id have been found matching
+            the name of the resources defined in config.BOT.NAME and
+            config.CHANNEL.NAME
+        """
+        # Get user ID
+        user = self.get_user(name=config.BOT.NAME)
+        if user and user.get('id'):
+            self.user_id = user['id']
+        else:
+            raise SlackClientFailedInit(
+                "could not find a Slack user ID for a user named {} "
+                "(config.BOT.NAME)".format(config.BOT.NAME))
+
+        # Get channels IDs
+        for channel_name in config.CHANNEL.NAMES:
+            channel = self.get_channel(name=channel_name)
+            if channel and channel.get('id'):
+                self.channels[channel_name] = channel['id']
+            else:
+                raise SlackClientFailedInit(
+                    "could not find a Slack channel ID for a channel named {} "
+                    "(config.CHANNEL.NAMES)".format(channel_name))
+        return True
 
     def is_api_working(self):
         """
@@ -43,62 +90,126 @@ class Slack:
 
     def make_api_call(self, method, timeout=20, default_return=None, **kwargs):
         """
+        Attempt to make an API call to Slack. Will retry two times if first
+        call fail.
 
-        :param method:
-        :param timeout:
-        :param kwargs:
-        :return:
+        :param method: A Slack call method. Ref: https://api.slack.com/methods
+        :rtype method: str
+        :param timeout: A timeout value in seconds before the API call will
+            timeout.
+        :rtype timeout: int
+        :param kwargs: Key arguments to send to the slack API.
+        :rtype kwargs: dict
+
+        :return: The resulting payload of the API call or default_return if
+            the API call did not execute properly or did not return OK.
         """
 
         for _ in range(3):
             try:
-                slack = self.get_client()
-                result_call = slack.api_call(method, timeout, **kwargs)
+                slacker = self.get_client()
+                result_call = slacker.api_call(method, timeout, **kwargs)
 
-                if result_call.get('ok'):
+                if result_call.get('ok'):  # Call was successful
                     if result_call.get("warning"):
                         logging.warning(
                             "the following Slack API call returned a warning: "
                             "{}\nwarning message: {}"
                             .format(method, result_call["warning"]))
 
-                    print(result_call)
                     return result_call
-                else:
+                else:  # Call was received by Slack API but did not work
                     logging.warning("the following Slack API call did not "
                                     "return OK: {}.\nerror message: {}"
                                     .format(method, result_call['error']))
-            except:
+            except:  # Call likely never reached Slack API
                 logging.exception("failed to make the following Slack API "
                                   "call: {}".format(method))
-        else:
+        else:  # 3 tries to make the API call
             return default_return
 
     # Channel
-    def get_channel(self, channel_id):
-        result_call = self.make_api_call(
-            'channels.info', channel=channel_id) or {}
+    def get_channel(self, channel_id=None, name=None):
+        """
+        Get information on a specific channel based on its ID or name.
+
+        :param channel_id: A Slack channel ID.
+        :rtype channel: str
+        :param name: A Slack channel name, case insensitive. All channels in
+            Slack are all lowercase.
+        :rtype name: str
+
+        :return: A Slack Channel dict if found, an empty dict otherwise.
+        """
+        if not channel_id and not name:
+            return {}
+
+        # Search by ID
+        if channel_id:
+            result_call = self.make_api_call(
+                'channels.info', channel=channel_id) or {}
+        # Search by Name
+        else:
+            result_call = {}
+            channels = self.get_channels()
+            for channel in channels:
+                if channel['name'] == name.lower():
+                    return channel
+
         return result_call.get('channel') or {}
 
     def get_channels(self):
+        """
+        Get information on all the channels in a team.
+
+        :return: A list of dict each representing a channel or an empty list if
+            something went wrong.
+        """
         result_call = self.make_api_call('channels.list') or {}
         return result_call.get('channels') or []
 
     # User
-    def get_user(self, user_id):
-        result_call = self.make_api_call('users.info', user=user_id) or {}
+    def get_user(self, user_id=None, name=None):
+        """
+        Get information on a specific user based on its ID or name.
+
+        :param user_id: A Slack user ID.
+        :param name: A Slack user name.
+
+        :return: A Slack User dict if found, an empty dict otherwise.
+        """
+        if not user_id and not name:
+            return {}
+
+        # Search by ID
+        if user_id:
+            result_call = self.make_api_call('users.info', user=user_id) or {}
+        # Search by Name
+        else:
+            result_call = {}
+            users = self.get_users()
+            for user in users:
+                # TODO: verify if name is unique, and case sensitive.
+                if user['name'] == name:
+                    return user
+
         return result_call.get('user') or {}
 
     def get_users(self):
+        """
+        Get information on all the users in a team.
+
+        :return: A list of dict each representing a user or an empty list if
+            something went wrong.
+        """
         result_call = self.make_api_call('users.list') or {}
         return result_call.get('members') or []
 
     # Chat
-    def send_message(self, text, channel=config.FREESPACE.CHANNEL_ID,
+    def send_message(self, text, channel=None,
                      parse=None, link_names=True, attachments=None,
                      unfurl_links=True, unfurl_media=False,
-                     username=config.BOT.USERNAME, as_user=False,
-                     icon_url=config.BOT.ICON_URL,
+                     username=None, as_user=False, icon_url=None,
                      icon_emoji=None, thread_ts=None, reply_broadcast=False):
         """
         Post a message to a slack public/private channel, private group or
@@ -136,6 +247,15 @@ class Slack:
             empty dict in the case of catastrophic failure.
         """
 
+        # Load defaults
+        channel = channel or self.channels[self.channels.keys()[0]]
+
+        if not as_user and not username and config.BOT.NAME:
+            username = config.BOT.NAME
+
+        if not as_user and not icon_url and config.BOT.ICON_URL:
+            icon_url = config.BOT.ICON_URL
+
         # Construct message as dict
         message_kwargs = {
             'channel': channel,
@@ -170,3 +290,36 @@ class Slack:
             'chat.postMessage', **message_kwargs) or {}
 
         return result_call.get('message') or {}
+
+    # Real Time Messaging (RTM)
+    def start_rtm(self):
+        """
+        Start a connection to the RTM stream.
+
+        :return: True if the client connected correctly to the RTM stream;
+            False otherwise.
+        """
+        slacker = self.get_client()
+        logging.info("connecting to the Slack RTM stream")
+
+        if slacker.rtm_connect():
+            logging.debug("connected to the Slack RTM stream")
+            return True
+        else:
+            logging.error("failed to connect to the Slack RTM stream")
+            return False
+
+    def read_rtm_stream(self):
+        """
+        Read events from the RTM stream.
+
+        :return: 0 to * Slack Events
+        """
+        slacker = self.get_client()
+        return slacker.rtm_read()
+
+
+def start_client():
+    global slack
+    slack = Slack()
+    slack.get_client()
